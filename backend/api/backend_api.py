@@ -336,6 +336,16 @@ def get_shopping_recommendations():
             all_products.extend(products)
         print(f"Total products gathered: {len(all_products)}")
 
+        # Check if we have any real scraped products
+        valid_products = [p for p in all_products if p and p.get("title") and p.get("url")]
+        
+        if not valid_products:
+            print("No valid scraped products found. Returning error instead of generic products.")
+            return jsonify({
+                "status": "error", 
+                "message": "Unable to fetch product recommendations at this time. Please try again later."
+            }), 503
+
         # Get currency symbol
         currency_symbol = get_currency_symbol(user_data.get("user_location", ""))
 
@@ -348,7 +358,7 @@ def get_shopping_recommendations():
         try:
             # Get AI sorted recommendations
             sorted_products_text = sorting_algo.get_sorted_products(
-                user_input, user_data, all_products
+                user_input, user_data, valid_products
             )
             print("AI Recommendations Text:")
             print(sorted_products_text)
@@ -362,7 +372,7 @@ def get_shopping_recommendations():
 
             # Create a mapping of scraped products by title for easy lookup
             scraped_products_map = {}
-            for product in all_products:
+            for product in valid_products:
                 if product and product.get("title"):
                     title_key = product["title"].strip().lower()
                     scraped_products_map[title_key] = product
@@ -390,27 +400,20 @@ def get_shopping_recommendations():
                             scraped_product = product
                             break
 
-                # Use AI data as primary, scraped data as fallback
-                product_data = {
-                    "id": str(i + 1),
-                    "name": ai_title,
-                    "price": ai_product.get("price", 0),
-                    "currency": currency_symbol,
-                    "image": ai_product.get("image_url", "/placeholder.svg"),
-                    "buyUrl": ai_product.get("url", ""),
-                    "category": "Recommended",
-                    "rating": ai_product.get("rating", 0),
-                    "reasoning": ai_product.get("reasoning", "AI recommended product"),
-                }
-
-                # Override with scraped data if available and more complete
+                # Only add products that have real scraped data
                 if scraped_product:
-                    if scraped_product.get("price_value"):
-                        product_data["price"] = scraped_product["price_value"]
-                    if scraped_product.get("image_url"):
-                        product_data["image"] = scraped_product["image_url"]
-                    if scraped_product.get("url"):
-                        product_data["buyUrl"] = scraped_product["url"]
+                    # Use scraped data as primary source
+                    product_data = {
+                        "id": str(i + 1),
+                        "name": scraped_product["title"],
+                        "price": scraped_product.get("price_value", 0),
+                        "currency": currency_symbol,
+                        "image": scraped_product.get("image_url", "/placeholder.svg"),
+                        "buyUrl": scraped_product.get("url", ""),
+                        "category": "Recommended",
+                        "rating": 0,
+                        "reasoning": ai_product.get("reasoning", "AI recommended product"),
+                    }
 
                     # Parse rating from scraped data
                     if scraped_product.get("average_rating"):
@@ -425,15 +428,12 @@ def get_shopping_recommendations():
                         except:
                             pass
 
-                formatted_products.append(product_data)
+                    formatted_products.append(product_data)
 
-            # If no AI recommendations, fall back to scraped products
-            if not formatted_products and all_products:
-                print("No AI recommendations found, using scraped products as fallback")
-                for i, product in enumerate(all_products[:10]):
-                    if not product or not product.get("title"):
-                        continue
-
+            # If no AI recommendations matched with scraped data, use scraped products directly
+            if not formatted_products and valid_products:
+                print("No AI recommendations matched with scraped data, using scraped products directly")
+                for i, product in enumerate(valid_products[:10]):
                     rating = 0
                     try:
                         rating_str = str(product.get("average_rating", "0"))
@@ -459,11 +459,19 @@ def get_shopping_recommendations():
                         }
                     )
 
+            # Only return response if we have real products
+            if not formatted_products:
+                print("No valid products to return. Scraping may have failed.")
+                return jsonify({
+                    "status": "error", 
+                    "message": "Unable to fetch product recommendations at this time. Please try again later."
+                }), 503
+
             # Prepare response
             response_data = {
                 "status": "success",
                 "categories": categories,
-                "products": formatted_products,  # This should now be a list of product objects
+                "products": formatted_products,
                 "ai_recommendations": json.dumps(ai_recommendations),
             }
 
@@ -474,46 +482,50 @@ def get_shopping_recommendations():
         except Exception as e:
             print(f"Error in AI processing: {e}")
 
-            # Fallback to scraped products only
-            fallback_products = []
-            for i, product in enumerate(all_products[:10]):
-                if not product or not product.get("title"):
-                    continue
+            # Only use scraped products if they exist and are valid
+            if valid_products:
+                fallback_products = []
+                for i, product in enumerate(valid_products[:10]):
+                    rating = 0
+                    try:
+                        rating_str = str(product.get("average_rating", "0"))
+                        rating_clean = "".join(
+                            c for c in rating_str if c.isdigit() or c == "."
+                        )
+                        if rating_clean:
+                            rating = min(max(float(rating_clean), 0), 5)
+                    except:
+                        pass
 
-                rating = 0
-                try:
-                    rating_str = str(product.get("average_rating", "0"))
-                    rating_clean = "".join(
-                        c for c in rating_str if c.isdigit() or c == "."
+                    fallback_products.append(
+                        {
+                            "id": str(i + 1),
+                            "name": product["title"],
+                            "price": product.get("price_value", 0) or 0,
+                            "currency": currency_symbol,
+                            "image": product.get("image_url", "/placeholder.svg"),
+                            "buyUrl": product.get("url", ""),
+                            "category": "General",
+                            "rating": rating,
+                            "reasoning": "Product recommendation based on your preferences",
+                        }
                     )
-                    if rating_clean:
-                        rating = min(max(float(rating_clean), 0), 5)
-                except:
-                    pass
 
-                fallback_products.append(
-                    {
-                        "id": str(i + 1),
-                        "name": product["title"],
-                        "price": product.get("price_value", 0) or 0,
-                        "currency": currency_symbol,
-                        "image": product.get("image_url", "/placeholder.svg"),
-                        "buyUrl": product.get("url", ""),
-                        "category": "General",
-                        "rating": rating,
-                        "reasoning": "Fallback recommendation",
-                    }
-                )
+                response_data = {
+                    "status": "success",
+                    "categories": categories,
+                    "products": fallback_products,
+                    "ai_recommendations": json.dumps([]),
+                }
 
-            response_data = {
-                "status": "success",
-                "categories": categories,
-                "products": fallback_products,
-                "ai_recommendations": json.dumps([]),
-            }
-
-            user_sessions[session_id]["results"] = response_data
-            return jsonify(response_data)
+                user_sessions[session_id]["results"] = response_data
+                return jsonify(response_data)
+            else:
+                # No valid products available
+                return jsonify({
+                    "status": "error", 
+                    "message": "Unable to fetch product recommendations at this time. Please try again later."
+                }), 503
 
     except Exception as e:
         print(f"Main error: {e}")
@@ -560,6 +572,6 @@ def cleanup_session():
 
 if __name__ == "__main__":
     print("Starting Shopping Recommendation API...")
-    print("API will be available at: http://localhost:5000")
-    print("Health check: http://localhost:5000/api/health")
+    print("API will be available at: https://eventually-yours-shopping-app.onrender.com/")
+    print("Health check: https://eventually-yours-shopping-app.onrender.com/api/health")
     app.run(debug=True, host="0.0.0.0", port=5000)
