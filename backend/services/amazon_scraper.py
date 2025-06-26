@@ -77,13 +77,13 @@ def get_realistic_headers():
 
 def amazon_category_top_products(category, amazon_domain, num_results=3, budget_range=None):
     """
-    Get top products from Amazon category search with improved concurrency
+    Get top products from Amazon category search with improved concurrency and better error handling
     """
     try:
         print(f"Searching for category: {category} on {amazon_domain}")
         
-        # Use session pool for better connection reuse
-        session = get_session()
+        # Use realistic headers to avoid detection
+        headers = get_realistic_headers()
         
         # Build search URL
         search_query = quote_plus(category)
@@ -101,19 +101,44 @@ def amazon_category_top_products(category, amazon_domain, num_results=3, budget_
         
         print(f"Search URL: {search_url}")
         
-        # Make request with session
-        response = session.get(search_url, timeout=10)
-        response.raise_for_status()
+        # Make request with realistic headers and retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(search_url, headers=headers, timeout=15)
+                
+                if response.status_code == 503:
+                    print(f"503 error on attempt {attempt + 1} for {category}, retrying...")
+                    if attempt < max_retries - 1:
+                        time.sleep(random.uniform(2, 5))  # Random delay
+                        continue
+                    else:
+                        print(f"Max retries reached for {category}, returning empty list")
+                        return []
+                
+                response.raise_for_status()
+                break
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Request error on attempt {attempt + 1} for {category}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(random.uniform(1, 3))
+                    continue
+                else:
+                    print(f"Max retries reached for {category}, returning empty list")
+                    return []
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Multiple selectors for product links
+        # Multiple selectors for product links with better fallbacks
         product_selectors = [
             'a[href*="/dp/"]',
             'a[href*="/gp/product/"]',
             'a[data-component-type="s-search-result"]',
             '.s-result-item a[href*="/dp/"]',
-            '.s-result-item a[href*="/gp/product/"]'
+            '.s-result-item a[href*="/gp/product/"]',
+            '.s-search-results a[href*="/dp/"]',
+            '[data-component-type="s-search-result"] a[href*="/dp/"]'
         ]
         
         product_urls = []
@@ -146,7 +171,29 @@ def amazon_category_top_products(category, amazon_domain, num_results=3, budget_
             if len(product_urls) >= num_results:
                 break
         
+        # If no products found with selectors, try alternative approach
+        if not product_urls:
+            print(f"No products found with selectors for {category}, trying alternative approach")
+            # Look for any links containing product IDs
+            all_links = soup.find_all('a', href=True)
+            for link in all_links:
+                href = link.get('href', '')
+                if '/dp/' in href:
+                    product_id_match = re.search(r'/dp/([A-Z0-9]{10})', href)
+                    if product_id_match:
+                        product_id = product_id_match.group(1)
+                        clean_url = f"{amazon_domain}/dp/{product_id}"
+                        if clean_url not in seen_urls:
+                            seen_urls.add(clean_url)
+                            product_urls.append(clean_url)
+                            if len(product_urls) >= num_results:
+                                break
+        
         print(f"Found {len(product_urls)} product URLs for category: {category}")
+        
+        # Add small delay to avoid rate limiting
+        time.sleep(random.uniform(0.5, 1.5))
+        
         return product_urls[:num_results]
         
     except Exception as e:
@@ -184,17 +231,40 @@ def parse_price_to_float(price_str):
 
 def scrape_amazon_product(url):
     """
-    Scrape individual Amazon product page with improved concurrency
+    Scrape individual Amazon product page with improved concurrency and error handling
     """
     try:
         print(f"Scraping product: {url}")
         
-        # Use session pool for better connection reuse
-        session = get_session()
+        # Use realistic headers to avoid detection
+        headers = get_realistic_headers()
         
-        # Make request with session
-        response = session.get(url, timeout=8)
-        response.raise_for_status()
+        # Make request with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                
+                if response.status_code == 503:
+                    print(f"503 error on attempt {attempt + 1} for {url}, retrying...")
+                    if attempt < max_retries - 1:
+                        time.sleep(random.uniform(2, 4))  # Random delay
+                        continue
+                    else:
+                        print(f"Max retries reached for {url}, returning None")
+                        return None
+                
+                response.raise_for_status()
+                break
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Request error on attempt {attempt + 1} for {url}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(random.uniform(1, 3))
+                    continue
+                else:
+                    print(f"Max retries reached for {url}, returning None")
+                    return None
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
@@ -207,7 +277,9 @@ def scrape_amazon_product(url):
             'h1.a-size-large',
             'h1.a-size-base-plus',
             '.a-size-large.product-title-word-break',
-            'span#productTitle'
+            'span#productTitle',
+            'h1[data-automation-id="product-title"]',
+            '.a-size-large.a-spacing-none.a-color-base'
         ]
         
         for selector in title_selectors:
@@ -222,7 +294,10 @@ def scrape_amazon_product(url):
             '.a-price .a-offscreen',
             '.a-price-range .a-offscreen',
             '.a-price .a-price-whole',
-            'span.a-price-whole'
+            'span.a-price-whole',
+            '.a-price.a-text-price .a-offscreen',
+            '#priceblock_ourprice',
+            '#priceblock_dealprice'
         ]
         
         for selector in price_selectors:
@@ -245,13 +320,15 @@ def scrape_amazon_product(url):
             '.a-dynamic-image',
             'img#imgBlkFront',
             '.a-image-stretch img',
-            '#main-image'
+            '#main-image',
+            '.a-image-container img',
+            '[data-old-hires]'
         ]
         
         for selector in image_selectors:
             img_elem = soup.select_one(selector)
             if img_elem:
-                img_src = img_elem.get('src') or img_elem.get('data-src')
+                img_src = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-old-hires')
                 if img_src:
                     product_data['image_url'] = img_src
                     break
@@ -261,7 +338,9 @@ def scrape_amazon_product(url):
             '.a-icon-alt',
             '.a-star-rating-text',
             'span[data-hook="rating-out-of-text"]',
-            '.a-icon-star-small .a-icon-alt'
+            '.a-icon-star-small .a-icon-alt',
+            'i[class*="a-star"] span',
+            '.a-icon-alt[class*="a-star"]'
         ]
         
         for selector in rating_selectors:
@@ -285,6 +364,10 @@ def scrape_amazon_product(url):
             return None
         
         print(f"Successfully scraped product: {product_data.get('title', 'Unknown')}")
+        
+        # Add small delay to avoid rate limiting
+        time.sleep(random.uniform(0.2, 0.8))
+        
         return product_data
         
     except Exception as e:
