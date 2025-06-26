@@ -2,11 +2,44 @@ import random
 import time
 import httpx
 from bs4 import BeautifulSoup
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin, urlparse
 import requests
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
+# Global session pool for better connection reuse
+session_pool = {}
+session_lock = threading.Lock()
+
+def get_session():
+    """Get or create a session for the current thread"""
+    thread_id = threading.get_ident()
+    with session_lock:
+        if thread_id not in session_pool:
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0'
+            })
+            session_pool[thread_id] = session
+        return session_pool[thread_id]
+
+def cleanup_session():
+    """Clean up session for current thread"""
+    thread_id = threading.get_ident()
+    with session_lock:
+        if thread_id in session_pool:
+            del session_pool[thread_id]
 
 def get_realistic_headers():
     """Generate realistic browser headers to avoid detection"""
@@ -42,102 +75,83 @@ def get_realistic_headers():
     }
 
 
-def amazon_category_top_products(
-    category, amazon_domain, num_results=10, budget_range=None
-):
+def amazon_category_top_products(category, amazon_domain, num_results=3, budget_range=None):
     """
-    Scrape Amazon category page for top product URLs using rotating user agents and random delays to avoid blocking.
-    Supports optional budget_range filtering in the format "$low-$high".
+    Get top products from Amazon category search with improved concurrency
     """
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0",
-    ]
-
-    # Parse budget_range if provided
-    low_price = None
-    high_price = None
-    if budget_range:
-        try:
-            parts = (
-                budget_range.replace("£", "")
-                .replace("€", "")
-                .replace("$", "")
-                .split("-")
-            )
-            if len(parts) == 2:
-                low_price = parts[0].strip()
-                high_price = parts[1].strip()
-        except Exception:
-            print("Error parsing budget range. Please check the format.")
-
-    # Construct Amazon search URL for the category, sorted by review rank
-    domain = amazon_domain
-    if domain.startswith("www."):
-        domain = domain[4:]
-
-    # Add price filters if available
-    price_filter = ""
-    if low_price and high_price:
-        price_filter = f"&low-price={low_price}&high-price={high_price}"
-
-    # Clean category name for better search results
-    clean_category = category.replace("*", "").replace("  ", " ").strip()
-    
-    search_url = (
-        f"https://www.{domain}/s?k={quote_plus(clean_category)}&s=review-rank{price_filter}"
-    )
-
-    urls = []
-    max_retries = 3
-    retry_delay = 5
-    for attempt in range(max_retries):
-        try:
-            headers = {
-                "User-Agent": random.choice(user_agents),
-                "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-            }
-            response = requests.get(search_url, headers=headers)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            # Find product links in search results
-            results = soup.select("a.a-link-normal.s-no-outline")
-            for link in results:
-                href = link.get("href")
-                if href and "/dp/" in href:
-                    full_url = f"https://{domain}{href.split('?')[0]}"
-                    if full_url not in urls:
-                        urls.append(full_url)
-                    if len(urls) >= num_results:
-                        break
-            break  # success, exit retry loop
-        except Exception as e:
-            print(f"Amazon category scraping error: {e}")
-            if attempt < max_retries - 1:
-                delay = retry_delay + random.uniform(0, 3)
-                print(f"Retrying in {delay:.1f} seconds...")
-                time.sleep(delay)
-            else:
-                print("Max retries reached. Moving on.")
-
-    # Be polite and avoid hammering Amazon
-    time.sleep(random.uniform(1, 3))
-
-    # Clean URLs to ensure https and www prefix
-    cleaned_urls = []
-    for url in urls[:num_results]:
-        if url.startswith("http://"):
-            url = "https://" + url[len("http://") :]
-        if "www." not in url:
-            parts = url.split("//")
-            url = parts[0] + "//www." + parts[1]
-        cleaned_urls.append(url)
-
-    return cleaned_urls
+    try:
+        print(f"Searching for category: {category} on {amazon_domain}")
+        
+        # Use session pool for better connection reuse
+        session = get_session()
+        
+        # Build search URL
+        search_query = quote_plus(category)
+        search_url = f"{amazon_domain}/s?k={search_query}&ref=sr_pg_1"
+        
+        # Add budget filter if provided
+        if budget_range:
+            try:
+                low, high = budget_range.replace("€", "").replace("$", "").replace("£", "").split("-")
+                low = float(low.strip())
+                high = float(high.strip())
+                search_url += f"&rh=p_36%3A{int(low*100)}-{int(high*100)}"
+            except:
+                pass  # Continue without budget filter if parsing fails
+        
+        print(f"Search URL: {search_url}")
+        
+        # Make request with session
+        response = session.get(search_url, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Multiple selectors for product links
+        product_selectors = [
+            'a[href*="/dp/"]',
+            'a[href*="/gp/product/"]',
+            'a[data-component-type="s-search-result"]',
+            '.s-result-item a[href*="/dp/"]',
+            '.s-result-item a[href*="/gp/product/"]'
+        ]
+        
+        product_urls = []
+        seen_urls = set()
+        
+        for selector in product_selectors:
+            links = soup.select(selector)
+            for link in links:
+                href = link.get('href', '')
+                if href and '/dp/' in href:
+                    # Clean and normalize URL
+                    if href.startswith('/'):
+                        full_url = urljoin(amazon_domain, href)
+                    else:
+                        full_url = href
+                    
+                    # Extract product ID and create clean URL
+                    product_id_match = re.search(r'/dp/([A-Z0-9]{10})', full_url)
+                    if product_id_match:
+                        product_id = product_id_match.group(1)
+                        clean_url = f"{amazon_domain}/dp/{product_id}"
+                        
+                        if clean_url not in seen_urls:
+                            seen_urls.add(clean_url)
+                            product_urls.append(clean_url)
+                            
+                            if len(product_urls) >= num_results:
+                                break
+            
+            if len(product_urls) >= num_results:
+                break
+        
+        print(f"Found {len(product_urls)} product URLs for category: {category}")
+        return product_urls[:num_results]
+        
+    except Exception as e:
+        print(f"Error in amazon_category_top_products for {category}: {e}")
+        return []
 
 
 def parse_price_to_float(price_str):
@@ -169,64 +183,113 @@ def parse_price_to_float(price_str):
 
 
 def scrape_amazon_product(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
-        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-    }
+    """
+    Scrape individual Amazon product page with improved concurrency
+    """
     try:
-        response = httpx.get(url, headers=headers, timeout=10)
+        print(f"Scraping product: {url}")
+        
+        # Use session pool for better connection reuse
+        session = get_session()
+        
+        # Make request with session
+        response = session.get(url, timeout=8)
         response.raise_for_status()
-    except Exception as e:
-        print(f"Error fetching URL {url}: {e}")
-        return None
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    title = soup.find(id="productTitle")
-    title = title.get_text(strip=True) if title else None
-
-    image = soup.select_one("#imgTagWrapperId img")
-    image_url = image["src"] if image and image.has_attr("src") else None
-
-    # Try multiple price selectors for better price extraction
-    price_selectors = [
-        ".a-price .a-offscreen",
-        "#priceblock_ourprice",
-        "#priceblock_dealprice",
-        ".a-price.a-text-price .a-offscreen",
-        ".a-price.a-text-price.a-size-medium.a-color-price .a-offscreen",
-        ".a-price.a-text-price.a-size-base.a-color-price .a-offscreen",
-        ".a-price-whole",
-        ".a-price-range .a-offscreen"
-    ]
-    
-    price_text = None
-    for selector in price_selectors:
-        price_elem = soup.select_one(selector)
-        if price_elem:
-            price_text = price_elem.get_text(strip=True)
-            if price_text and any(char.isdigit() for char in price_text):
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract product information with multiple selectors
+        product_data = {}
+        
+        # Title extraction with multiple selectors
+        title_selectors = [
+            '#productTitle',
+            'h1.a-size-large',
+            'h1.a-size-base-plus',
+            '.a-size-large.product-title-word-break',
+            'span#productTitle'
+        ]
+        
+        for selector in title_selectors:
+            title_elem = soup.select_one(selector)
+            if title_elem:
+                product_data['title'] = title_elem.get_text().strip()
                 break
-    
-    price_value = parse_price_to_float(price_text)
-
-    rating_tag = soup.select_one("span.a-icon-alt")
-    rating = None
-    if rating_tag:
-        rating_text = rating_tag.get_text(strip=True)
-        # Extract numeric rating
-        rating_match = re.search(r"(\d+(?:\.\d+)?)", rating_text)
-        if rating_match:
-            rating = float(rating_match.group(1))
-
-    return {
-        "url": url,
-        "title": title,
-        "image_url": image_url,
-        "price": price_text,
-        "price_value": price_value,
-        "average_rating": rating,
-    }
+        
+        # Price extraction with multiple selectors
+        price_selectors = [
+            '.a-price-whole',
+            '.a-price .a-offscreen',
+            '.a-price-range .a-offscreen',
+            '.a-price .a-price-whole',
+            'span.a-price-whole'
+        ]
+        
+        for selector in price_selectors:
+            price_elem = soup.select_one(selector)
+            if price_elem:
+                price_text = price_elem.get_text().strip()
+                # Extract numeric price
+                price_match = re.search(r'[\d,]+\.?\d*', price_text.replace(',', ''))
+                if price_match:
+                    try:
+                        product_data['price_value'] = float(price_match.group().replace(',', ''))
+                        product_data['price'] = price_text
+                        break
+                    except ValueError:
+                        continue
+        
+        # Image extraction with multiple selectors
+        image_selectors = [
+            '#landingImage',
+            '.a-dynamic-image',
+            'img#imgBlkFront',
+            '.a-image-stretch img',
+            '#main-image'
+        ]
+        
+        for selector in image_selectors:
+            img_elem = soup.select_one(selector)
+            if img_elem:
+                img_src = img_elem.get('src') or img_elem.get('data-src')
+                if img_src:
+                    product_data['image_url'] = img_src
+                    break
+        
+        # Rating extraction with multiple selectors
+        rating_selectors = [
+            '.a-icon-alt',
+            '.a-star-rating-text',
+            'span[data-hook="rating-out-of-text"]',
+            '.a-icon-star-small .a-icon-alt'
+        ]
+        
+        for selector in rating_selectors:
+            rating_elem = soup.select_one(selector)
+            if rating_elem:
+                rating_text = rating_elem.get_text().strip()
+                rating_match = re.search(r'(\d+\.?\d*)', rating_text)
+                if rating_match:
+                    try:
+                        product_data['average_rating'] = float(rating_match.group(1))
+                        break
+                    except ValueError:
+                        continue
+        
+        # Add URL to product data
+        product_data['url'] = url
+        
+        # Validate that we have at least a title
+        if not product_data.get('title'):
+            print(f"No title found for product: {url}")
+            return None
+        
+        print(f"Successfully scraped product: {product_data.get('title', 'Unknown')}")
+        return product_data
+        
+    except Exception as e:
+        print(f"Error scraping product {url}: {e}")
+        return None
 
 
 if __name__ == "__main__":
