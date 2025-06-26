@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
 import requests
 import json
+import re
 
 
 def get_realistic_headers():
@@ -139,29 +140,38 @@ def amazon_category_top_products(
     return cleaned_urls
 
 
-import re
-
-
 def parse_price_to_float(price_str):
     if not price_str:
         return None
-    # Remove currency symbols and commas, extract numeric part
-    match = re.search(r"[\d,.]+", price_str)
-    if not match:
-        return None
-    num_str = match.group(0).replace(",", "").replace(".", "")
-    # Handle decimal point by checking last two digits
-    if len(num_str) > 2:
-        num = float(num_str[:-2] + "." + num_str[-2:])
-    else:
-        num = float(num_str)
-    return num
+    
+    # Remove currency symbols and clean the string
+    cleaned = price_str.replace("£", "").replace("€", "").replace("$", "").replace(",", "").strip()
+    
+    # Handle different price formats
+    if "p" in cleaned.lower():  # UK pence format
+        # Convert pence to pounds
+        pence_match = re.search(r"(\d+)p", cleaned.lower())
+        if pence_match:
+            pence = int(pence_match.group(1))
+            return pence / 100.0
+    
+    # Handle decimal prices
+    decimal_match = re.search(r"(\d+\.\d+)", cleaned)
+    if decimal_match:
+        return float(decimal_match.group(1))
+    
+    # Handle whole number prices
+    whole_match = re.search(r"(\d+)", cleaned)
+    if whole_match:
+        return float(whole_match.group(1))
+    
+    return None
 
 
 def scrape_amazon_product(url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
     }
     try:
         response = httpx.get(url, headers=headers, timeout=10)
@@ -178,19 +188,36 @@ def scrape_amazon_product(url):
     image = soup.select_one("#imgTagWrapperId img")
     image_url = image["src"] if image and image.has_attr("src") else None
 
-    price = soup.select_one(".a-price .a-offscreen")
-    if not price:
-        # Try alternative price selectors
-        price = soup.select_one("#priceblock_ourprice") or soup.select_one(
-            "#priceblock_dealprice"
-        )
-    price_text = price.get_text(strip=True) if price else None
+    # Try multiple price selectors for better price extraction
+    price_selectors = [
+        ".a-price .a-offscreen",
+        "#priceblock_ourprice",
+        "#priceblock_dealprice",
+        ".a-price.a-text-price .a-offscreen",
+        ".a-price.a-text-price.a-size-medium.a-color-price .a-offscreen",
+        ".a-price.a-text-price.a-size-base.a-color-price .a-offscreen",
+        ".a-price-whole",
+        ".a-price-range .a-offscreen"
+    ]
+    
+    price_text = None
+    for selector in price_selectors:
+        price_elem = soup.select_one(selector)
+        if price_elem:
+            price_text = price_elem.get_text(strip=True)
+            if price_text and any(char.isdigit() for char in price_text):
+                break
+    
     price_value = parse_price_to_float(price_text)
 
     rating_tag = soup.select_one("span.a-icon-alt")
-    rating = (
-        rating_tag.get_text(strip=True).split(" out of ")[0] if rating_tag else None
-    )
+    rating = None
+    if rating_tag:
+        rating_text = rating_tag.get_text(strip=True)
+        # Extract numeric rating
+        rating_match = re.search(r"(\d+(?:\.\d+)?)", rating_text)
+        if rating_match:
+            rating = float(rating_match.group(1))
 
     return {
         "url": url,
