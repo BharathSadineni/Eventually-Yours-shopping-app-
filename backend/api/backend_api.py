@@ -9,6 +9,8 @@ from services.amazon_scraper import amazon_category_top_products, scrape_amazon_
 from services.prompt_builder import build_and_get_categories
 from services.sorting_algorithm import SortingAlgorithm
 import re
+from threading import Lock
+from queue import Queue
 
 app = Flask(__name__)
 app.config['APP_NAME'] = 'Eventually Yours Shopping App'
@@ -19,6 +21,15 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # Global variables to store user data and results
 user_sessions = {}
+
+# Global variables for concurrent processing
+request_queue = Queue()
+processing_lock = Lock()
+active_requests = {}
+request_results = {}
+
+# Worker pool for concurrent processing
+worker_pool = ThreadPoolExecutor(max_workers=3)  # Handle 3 concurrent requests
 
 
 @app.route("/api/health", methods=["GET"])
@@ -227,22 +238,179 @@ def get_shopping_recommendations():
             print(f"Session validation failed. session_id: {session_id}, exists: {session_id in user_sessions if session_id else False}")
             return jsonify({"status": "error", "message": "Invalid session"}), 400
 
+        # Check if request is already being processed
+        with processing_lock:
+            if session_id in active_requests:
+                return jsonify({"status": "processing", "message": "Request already being processed"}), 202
+            
+            # Mark request as active
+            active_requests[session_id] = True
+
+        try:
+            # Submit request to worker pool for concurrent processing
+            future = worker_pool.submit(process_recommendation_request, data)
+            
+            # Wait for result with timeout
+            try:
+                result = future.result(timeout=120)  # 2 minute timeout
+                
+                # Remove from active requests
+                with processing_lock:
+                    if session_id in active_requests:
+                        del active_requests[session_id]
+                
+                # Return result
+                if isinstance(result, tuple):
+                    return jsonify(result[0]), result[1]
+                else:
+                    return jsonify(result)
+                    
+            except Exception as e:
+                # Remove from active requests on error
+                with processing_lock:
+                    if session_id in active_requests:
+                        del active_requests[session_id]
+                
+                print(f"Error in concurrent processing: {e}")
+                return jsonify({"status": "error", "message": "Request processing failed"}), 500
+                
+        except Exception as e:
+            # Remove from active requests on error
+            with processing_lock:
+                if session_id in active_requests:
+                    del active_requests[session_id]
+            
+            print(f"Error submitting to worker pool: {e}")
+            return jsonify({"status": "error", "message": "Failed to process request"}), 500
+
+    except Exception as e:
+        print(f"Main error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/export-data/<session_id>", methods=["GET"])
+def export_user_data(session_id):
+    """Export user data for download"""
+    try:
+        if session_id not in user_sessions:
+            return jsonify({"status": "error", "message": "Invalid session"}), 400
+
+        user_data = user_sessions[session_id]["user_data"]
+        return jsonify({"status": "success", "data": user_data})
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/cleanup-session", methods=["POST"])
+def cleanup_session():
+    """Clean up a session when user closes the tab"""
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id")
+        
+        if session_id and session_id in user_sessions:
+            del user_sessions[session_id]
+            print(f"Session cleaned up: {session_id}")
+            return jsonify({
+                "status": "success",
+                "message": "Session cleaned up successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Session not found"
+            }), 404
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/request-status/<session_id>", methods=["GET"])
+def get_request_status(session_id):
+    """Check the status of a recommendation request"""
+    try:
+        with processing_lock:
+            is_processing = session_id in active_requests
+            has_results = session_id in user_sessions and "results" in user_sessions[session_id]
+            
+            if is_processing:
+                return jsonify({
+                    "status": "processing",
+                    "message": "Request is being processed"
+                })
+            elif has_results:
+                return jsonify({
+                    "status": "completed",
+                    "message": "Request completed successfully"
+                })
+            else:
+                return jsonify({
+                    "status": "idle",
+                    "message": "No active request"
+                })
+                
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/cancel-request/<session_id>", methods=["POST"])
+def cancel_request(session_id):
+    """Cancel an active recommendation request"""
+    try:
+        with processing_lock:
+            if session_id in active_requests:
+                del active_requests[session_id]
+                return jsonify({
+                    "status": "success",
+                    "message": "Request cancelled successfully"
+                })
+            else:
+                return jsonify({
+                    "status": "error",
+                    "message": "No active request to cancel"
+                }), 404
+                
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/worker-stats", methods=["GET"])
+def get_worker_stats():
+    """Get statistics about the worker pool and active requests"""
+    try:
+        with processing_lock:
+            stats = {
+                "active_requests": len(active_requests),
+                "active_request_sessions": list(active_requests.keys()),
+                "worker_pool_size": worker_pool._max_workers,
+                "total_sessions": len(user_sessions),
+                "sessions_with_results": len([s for s in user_sessions.values() if "results" in s])
+            }
+            return jsonify({"status": "success", "stats": stats})
+                
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def process_recommendation_request(request_data):
+    """Process a single recommendation request concurrently"""
+    session_id = request_data.get("session_id")
+    shopping_input = request_data.get("shopping_input", {})
+    
+    try:
+        print(f"Processing recommendation request for session: {session_id}")
+        
+        if session_id not in user_sessions:
+            return {"status": "error", "message": "Invalid session"}, 400
+
         # Get user data from session
         user_data = user_sessions[session_id].get("user_data", {})
-        print(f"User data from session: {user_data}")
         
-        # Check if user data is empty
         if not user_data or not user_data.get("favorite_categories"):
-            print("User data is empty or missing categories")
-            return jsonify({
-                "status": "error", 
-                "message": "No user data found. Please complete your profile first."
-            }), 400
+            return {"status": "error", "message": "No user data found. Please complete your profile first."}, 400
 
-        # Extract shopping input
-        shopping_input = data.get("shopping_input", {})
-
-        # Build improved user input string for Gemini prompt
+        # Build user input string for Gemini prompt
         user_input = f"""
         Occasion: {shopping_input.get('occasion', '')}
         Preferred Brands: {shopping_input.get('brandsPreferred', '')}
@@ -255,18 +423,9 @@ def get_shopping_recommendations():
         categories = build_and_get_categories(
             GEMINI_API_KEY, user_input, user_data["user_location"], user_data
         )
-        print(f"Categories from Gemini: {categories}")
-
+        
         if not categories:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Failed to get categories from Gemini API",
-                    }
-                ),
-                500,
-            )
+            return {"status": "error", "message": "Failed to get categories from Gemini API"}, 500
 
         # Filter and prioritize categories based on user request
         shopping_request = shopping_input.get('shoppingInput', '').lower()
@@ -307,17 +466,14 @@ def get_shopping_recommendations():
         # Get the category with the highest score
         if category_scores:
             primary_category = max(category_scores, key=category_scores.get)
-            print(f"Detected primary category: {primary_category} (score: {category_scores[primary_category]})")
         else:
             # Try to extract keywords from the request for better matching
             request_words = shopping_request.split()
-            print(f"No predefined category detected. Analyzing request words: {request_words}")
             
             # Check if any of the user's favorite categories match the request
             user_categories = user_data.get('favorite_categories', [])
             for user_cat in user_categories:
                 if user_cat.lower() in shopping_request:
-                    print(f"Found match with user's favorite category: {user_cat}")
                     break
         
         # If we found a primary category, prioritize those categories
@@ -329,10 +485,9 @@ def get_shopping_recommendations():
         else:
             # If no specific category detected, use original order
             filtered_categories = categories
-            print("No specific category detected, using original category order from AI")
 
-        # Limit categories to top 7 and clean them
-        filtered_categories = filtered_categories[:7]
+        # Limit categories to top 5 for faster processing
+        filtered_categories = filtered_categories[:5]
         
         # Clean category names for better scraping
         cleaned_categories = []
@@ -348,7 +503,6 @@ def get_shopping_recommendations():
                 cleaned_categories.append(clean_cat)
         
         categories = cleaned_categories
-        print(f"Cleaned categories for scraping: {categories}")
 
         # Get Amazon domain
         amazon_domain = get_amazon_domain(user_data["user_location"])
@@ -357,21 +511,18 @@ def get_shopping_recommendations():
         category_products = {}
 
         def fetch_category_products(category):
-            print(f"Starting to scrape category: '{category}'")
             urls = amazon_category_top_products(
                 category,
                 amazon_domain,
-                num_results=3,
+                num_results=2,  # Reduced from 3 to 2 for faster scraping
                 budget_range=user_data.get("budget_range"),
             )
-            print(f"URLs for category '{category}': {urls}")
             products = []
             if not urls:
-                print(f"No URLs found for category '{category}'")
                 return category, products
 
-            print(f"Scraping {len(urls)} products for category '{category}'")
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            # Increased max_workers for faster concurrent scraping
+            with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {
                     executor.submit(scrape_amazon_product, url): url for url in urls
                 }
@@ -380,7 +531,6 @@ def get_shopping_recommendations():
                     try:
                         product = future.result()
                         if product:
-                            print(f"Successfully scraped product: {product.get('title', 'No title')[:50]}...")
                             # Filter products by budget range if price_value is available
                             budget_range = user_data.get("budget_range")
                             if budget_range and product.get("price_value") is not None:
@@ -395,27 +545,19 @@ def get_shopping_recommendations():
                                     high = float(high.strip())
                                     if low <= product["price_value"] <= high:
                                         products.append(product)
-                                        print(f"Product within budget: {product.get('price_value')}")
-                                    else:
-                                        print(f"Product outside budget: {product.get('price_value')} (range: {low}-{high})")
                                 except:
                                     # If budget parsing fails, include product anyway
                                     products.append(product)
-                                    print(f"Budget parsing failed, included product: {product.get('price_value')}")
                             else:
                                 # If no price or budget, include product
                                 products.append(product)
-                                print(f"No price/budget, included product: {product.get('price_value')}")
-                        else:
-                            print(f"Failed to scrape product from URL: {url}")
                     except Exception as e:
                         print(f"Exception occurred while scraping URL {url}: {e}")
 
-            print(f"Products scraped for category '{category}': {len(products)}")
             return category, products
 
-        # Scrape products for each category
-        with ThreadPoolExecutor(max_workers=len(categories)) as category_executor:
+        # Scrape products for each category with increased concurrency
+        with ThreadPoolExecutor(max_workers=7) as category_executor:
             category_futures = [
                 category_executor.submit(fetch_category_products, category)
                 for category in categories
@@ -428,17 +570,12 @@ def get_shopping_recommendations():
         all_products = []
         for products in category_products.values():
             all_products.extend(products)
-        print(f"Total products gathered: {len(all_products)}")
 
         # Check if we have any real scraped products
         valid_products = [p for p in all_products if p and p.get("title") and p.get("url")]
         
         if not valid_products:
-            print("No valid scraped products found. Returning error instead of generic products.")
-            return jsonify({
-                "status": "error", 
-                "message": "Unable to fetch product recommendations at this time. Please try again later."
-            }), 503
+            return {"status": "error", "message": "Unable to fetch product recommendations at this time. Please try again later."}, 503
 
         # Get currency symbol
         currency_symbol = get_currency_symbol(user_data.get("user_location", ""))
@@ -454,12 +591,9 @@ def get_shopping_recommendations():
             sorted_products_text = sorting_algo.get_sorted_products(
                 user_input, user_data, valid_products
             )
-            print("AI Recommendations Text:")
-            print(sorted_products_text)
 
             # Parse AI recommendations
             ai_recommendations = parse_ai_recommendations(sorted_products_text)
-            print(f"Parsed AI recommendations: {len(ai_recommendations)}")
 
             # Format products for frontend
             formatted_products = []
@@ -526,8 +660,8 @@ def get_shopping_recommendations():
 
             # If no AI recommendations matched with scraped data, use scraped products directly
             if not formatted_products and valid_products:
-                print("No AI recommendations matched with scraped data, using scraped products directly")
-                for i, product in enumerate(valid_products[:10]):
+                # Limit to top 6 products for faster processing
+                for i, product in enumerate(valid_products[:6]):
                     rating = 0
                     try:
                         rating_str = str(product.get("average_rating", "0"))
@@ -555,11 +689,7 @@ def get_shopping_recommendations():
 
             # Only return response if we have real products
             if not formatted_products:
-                print("No valid products to return. Scraping may have failed.")
-                return jsonify({
-                    "status": "error", 
-                    "message": "Unable to fetch product recommendations at this time. Please try again later."
-                }), 503
+                return {"status": "error", "message": "Unable to fetch product recommendations at this time. Please try again later."}, 503
 
             # Prepare response
             response_data = {
@@ -570,8 +700,7 @@ def get_shopping_recommendations():
             }
 
             user_sessions[session_id]["results"] = response_data
-            print(f"Response data sent to frontend: {len(formatted_products)} products")
-            return jsonify(response_data)
+            return response_data
 
         except Exception as e:
             print(f"Error in AI processing: {e}")
@@ -579,7 +708,8 @@ def get_shopping_recommendations():
             # Only use scraped products if they exist and are valid
             if valid_products:
                 fallback_products = []
-                for i, product in enumerate(valid_products[:10]):
+                # Limit to top 6 products for faster processing
+                for i, product in enumerate(valid_products[:6]):
                     rating = 0
                     try:
                         rating_str = str(product.get("average_rating", "0"))
@@ -613,55 +743,14 @@ def get_shopping_recommendations():
                 }
 
                 user_sessions[session_id]["results"] = response_data
-                return jsonify(response_data)
+                return response_data
             else:
                 # No valid products available
-                return jsonify({
-                    "status": "error", 
-                    "message": "Unable to fetch product recommendations at this time. Please try again later."
-                }), 503
+                return {"status": "error", "message": "Unable to fetch product recommendations at this time. Please try again later."}, 503
 
     except Exception as e:
-        print(f"Main error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route("/api/export-data/<session_id>", methods=["GET"])
-def export_user_data(session_id):
-    """Export user data for download"""
-    try:
-        if session_id not in user_sessions:
-            return jsonify({"status": "error", "message": "Invalid session"}), 400
-
-        user_data = user_sessions[session_id]["user_data"]
-        return jsonify({"status": "success", "data": user_data})
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route("/api/cleanup-session", methods=["POST"])
-def cleanup_session():
-    """Clean up a session when user closes the tab"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id")
-        
-        if session_id and session_id in user_sessions:
-            del user_sessions[session_id]
-            print(f"Session cleaned up: {session_id}")
-            return jsonify({
-                "status": "success",
-                "message": "Session cleaned up successfully"
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Session not found"
-            }), 404
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        print(f"Error processing recommendation request: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 
 if __name__ == "__main__":
