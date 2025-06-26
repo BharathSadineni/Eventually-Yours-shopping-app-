@@ -45,8 +45,17 @@ def amazon_category_top_products(
     category, amazon_domain, num_results=10, budget_range=None
 ):
     """
-    Scrape Amazon category page for top product URLs using advanced anti-detection techniques.
+    Scrape Amazon category page for top product URLs using rotating user agents and random delays to avoid blocking.
+    Supports optional budget_range filtering in the format "$low-$high".
     """
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0",
+    ]
+
     # Parse budget_range if provided
     low_price = None
     high_price = None
@@ -82,106 +91,42 @@ def amazon_category_top_products(
     )
 
     urls = []
-    max_retries = 5
-    base_delay = 3
-    
+    max_retries = 3
+    retry_delay = 5
     for attempt in range(max_retries):
         try:
-            # Use session for better connection management
-            session = requests.Session()
-            
-            # Set realistic headers
-            headers = get_realistic_headers()
-            session.headers.update(headers)
-            
-            # Add random delay before request
-            time.sleep(random.uniform(1, 3))
-            
-            # Make request with timeout
-            response = session.get(search_url, timeout=15)
+            headers = {
+                "User-Agent": random.choice(user_agents),
+                "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+            }
+            response = requests.get(search_url, headers=headers)
             response.raise_for_status()
-            
-            # Check if we got a valid HTML response
-            if "amazon" not in response.text.lower():
-                raise Exception("Response doesn't appear to be from Amazon")
-                
             soup = BeautifulSoup(response.text, "html.parser")
 
-            # Multiple selectors for product links to handle different page layouts
-            selectors = [
-                "a.a-link-normal.s-no-outline",
-                "a[href*='/dp/']",
-                "h2 a[href*='/dp/']",
-                ".s-result-item a[href*='/dp/']",
-                "[data-component-type='s-search-result'] a[href*='/dp/']",
-                ".s-card-container a[href*='/dp/']",
-                ".a-section a[href*='/dp/']",
-                "div[data-asin] a[href*='/dp/']",
-                ".sg-col-inner a[href*='/dp/']"
-            ]
-            
-            for selector in selectors:
-                results = soup.select(selector)
-                for link in results:
-                    href = link.get("href")
-                    if href and "/dp/" in href:
-                        # Clean and construct full URL
-                        if href.startswith("/"):
-                            full_url = f"https://{domain}{href.split('?')[0]}"
-                        elif href.startswith("http"):
-                            full_url = href.split('?')[0]
-                        else:
-                            continue
-                            
-                        # Ensure proper domain
-                        if domain not in full_url:
-                            full_url = full_url.replace("amazon.com", domain)
-                            
-                        # Additional URL validation
-                        if "/dp/" in full_url and len(full_url) > 20:
-                            if full_url not in urls:
-                                urls.append(full_url)
-                            if len(urls) >= num_results:
-                                break
-                if len(urls) >= num_results:
-                    break
-                    
-            # If we got URLs, break out of retry loop
-            if urls:
-                print(f"Successfully found {len(urls)} URLs for category '{clean_category}'")
-                break
-            else:
-                # Try alternative approach - look for data-asin attributes
-                asin_elements = soup.select("[data-asin]")
-                for element in asin_elements:
-                    asin = element.get("data-asin")
-                    if asin and len(asin) == 10:  # Valid ASIN length
-                        full_url = f"https://{domain}/dp/{asin}"
-                        if full_url not in urls:
-                            urls.append(full_url)
-                        if len(urls) >= num_results:
-                            break
-                            
-                if urls:
-                    print(f"Successfully found {len(urls)} URLs using ASIN method for category '{clean_category}'")
-                    break
-                else:
-                    raise Exception("No product URLs found in response")
-                
+            # Find product links in search results
+            results = soup.select("a.a-link-normal.s-no-outline")
+            for link in results:
+                href = link.get("href")
+                if href and "/dp/" in href:
+                    full_url = f"https://{domain}{href.split('?')[0]}"
+                    if full_url not in urls:
+                        urls.append(full_url)
+                    if len(urls) >= num_results:
+                        break
+            break  # success, exit retry loop
         except Exception as e:
-            print(f"Amazon category scraping error (attempt {attempt + 1}): {e}")
+            print(f"Amazon category scraping error: {e}")
             if attempt < max_retries - 1:
-                # Exponential backoff with jitter
-                delay = base_delay * (2 ** attempt) + random.uniform(0, 2)
+                delay = retry_delay + random.uniform(0, 3)
                 print(f"Retrying in {delay:.1f} seconds...")
                 time.sleep(delay)
             else:
-                print(f"Max retries reached for category '{clean_category}'. Moving on.")
+                print("Max retries reached. Moving on.")
 
     # Be polite and avoid hammering Amazon
-    time.sleep(random.uniform(2, 5))
+    time.sleep(random.uniform(1, 3))
 
-    # Clean URLs to ensure https and proper domain
+    # Clean URLs to ensure https and www prefix
     cleaned_urls = []
     for url in urls[:num_results]:
         if url.startswith("http://"):
@@ -214,161 +159,47 @@ def parse_price_to_float(price_str):
 
 
 def scrape_amazon_product(url):
-    """Scrape individual Amazon product with improved error handling"""
-    max_retries = 3
-    base_delay = 2
-    
-    for attempt in range(max_retries):
-        try:
-            # Use session for better connection management
-            session = requests.Session()
-            
-            # Set realistic headers
-            headers = get_realistic_headers()
-            session.headers.update(headers)
-            
-            # Add random delay
-            time.sleep(random.uniform(1, 2))
-            
-            # Make request with timeout
-            response = session.get(url, timeout=15)
-            response.raise_for_status()
-            
-            # Check if we got a valid HTML response
-            if "amazon" not in response.text.lower():
-                raise Exception("Response doesn't appear to be from Amazon")
-                
-            soup = BeautifulSoup(response.text, "html.parser")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        response = httpx.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Error fetching URL {url}: {e}")
+        return None
 
-            # Multiple selectors for title
-            title_selectors = [
-                "#productTitle",
-                "h1#title",
-                ".product-title",
-                "h1[data-automation-id='product-title']",
-                "#title",
-                ".a-size-large.product-title-word-break",
-                "h1.a-size-large"
-            ]
-            
-            title = None
-            for selector in title_selectors:
-                title_elem = soup.select_one(selector)
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
-                    if title and len(title) > 5:  # Basic validation
-                        break
+    soup = BeautifulSoup(response.text, "html.parser")
 
-            # Multiple selectors for image
-            image_selectors = [
-                "#imgTagWrapperId img",
-                "#landingImage",
-                ".a-dynamic-image",
-                "img[data-old-hires]",
-                "img[data-a-dynamic-image]",
-                "#main-image",
-                ".a-image-container img",
-                "img[alt*='product']"
-            ]
-            
-            image_url = None
-            for selector in image_selectors:
-                image_elem = soup.select_one(selector)
-                if image_elem:
-                    # Try different image attributes
-                    for attr in ['src', 'data-src', 'data-old-hires', 'data-a-dynamic-image']:
-                        if image_elem.has_attr(attr):
-                            attr_value = image_elem[attr]
-                            if attr_value and 'http' in attr_value:
-                                # Handle data-a-dynamic-image JSON format
-                                if attr == 'data-a-dynamic-image':
-                                    try:
-                                        dynamic_data = json.loads(attr_value)
-                                        if dynamic_data:
-                                            # Get the first available image URL
-                                            first_key = list(dynamic_data.keys())[0]
-                                            image_url = first_key
-                                            break
-                                    except:
-                                        continue
-                                else:
-                                    image_url = attr_value
-                                    break
-                    if image_url:
-                        break
+    title = soup.find(id="productTitle")
+    title = title.get_text(strip=True) if title else None
 
-            # Multiple selectors for price
-            price_selectors = [
-                ".a-price .a-offscreen",
-                "#priceblock_ourprice",
-                "#priceblock_dealprice",
-                ".a-price-whole",
-                ".a-price-range .a-offscreen",
-                "[data-a-color='price'] .a-offscreen",
-                ".a-price.a-text-price .a-offscreen",
-                ".a-price.a-text-price.a-size-medium.a-color-price .a-offscreen",
-                ".a-price.a-text-price.a-size-base.a-color-price .a-offscreen"
-            ]
-            
-            price_text = None
-            for selector in price_selectors:
-                price_elem = soup.select_one(selector)
-                if price_elem:
-                    price_text = price_elem.get_text(strip=True)
-                    if price_text and any(char.isdigit() for char in price_text):
-                        break
+    image = soup.select_one("#imgTagWrapperId img")
+    image_url = image["src"] if image and image.has_attr("src") else None
 
-            price_value = parse_price_to_float(price_text)
+    price = soup.select_one(".a-price .a-offscreen")
+    if not price:
+        # Try alternative price selectors
+        price = soup.select_one("#priceblock_ourprice") or soup.select_one(
+            "#priceblock_dealprice"
+        )
+    price_text = price.get_text(strip=True) if price else None
+    price_value = parse_price_to_float(price_text)
 
-            # Multiple selectors for rating
-            rating_selectors = [
-                "span.a-icon-alt",
-                ".a-icon-alt",
-                "[data-hook='rating-out-of-text']",
-                ".a-star-rating-text",
-                ".a-icon-star-small .a-icon-alt",
-                ".a-icon-star .a-icon-alt"
-            ]
-            
-            rating = None
-            for selector in rating_selectors:
-                rating_elem = soup.select_one(selector)
-                if rating_elem:
-                    rating_text = rating_elem.get_text(strip=True)
-                    # Extract numeric rating
-                    rating_match = re.search(r"(\d+(?:\.\d+)?)", rating_text)
-                    if rating_match:
-                        rating = float(rating_match.group(1))
-                        if 0 <= rating <= 5:  # Validate rating range
-                            break
+    rating_tag = soup.select_one("span.a-icon-alt")
+    rating = (
+        rating_tag.get_text(strip=True).split(" out of ")[0] if rating_tag else None
+    )
 
-            # Validate that we got at least a title and URL
-            if not title or len(title) < 5:
-                raise Exception("Could not extract valid product title")
-
-            # Ensure we have a valid product URL
-            if not url or "/dp/" not in url:
-                raise Exception("Invalid product URL")
-
-            return {
-                "url": url,
-                "title": title,
-                "image_url": image_url,
-                "price": price_text,
-                "price_value": price_value,
-                "average_rating": rating,
-            }
-            
-        except Exception as e:
-            print(f"Error scraping product {url} (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                time.sleep(delay)
-            else:
-                print(f"Failed to scrape product after {max_retries} attempts: {url}")
-                return None
-
-    return None
+    return {
+        "url": url,
+        "title": title,
+        "image_url": image_url,
+        "price": price_text,
+        "price_value": price_value,
+        "average_rating": rating,
+    }
 
 
 if __name__ == "__main__":
