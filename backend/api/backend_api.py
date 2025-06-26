@@ -8,6 +8,7 @@ from utils.domain_gen import get_amazon_domain
 from services.amazon_scraper import amazon_category_top_products, scrape_amazon_product
 from services.prompt_builder import build_and_get_categories
 from services.sorting_algorithm import SortingAlgorithm
+import re
 
 app = Flask(__name__)
 app.config['APP_NAME'] = 'Eventually Yours Shopping App'
@@ -267,8 +268,37 @@ def get_shopping_recommendations():
                 500,
             )
 
-        # Limit categories to top 7
-        categories = categories[:7]
+        # Filter and prioritize categories based on user request
+        shopping_request = shopping_input.get('shoppingInput', '').lower()
+        filtered_categories = []
+        
+        # If user asks for music, prioritize music-related categories
+        if any(word in shopping_request for word in ['music', 'song', 'album', 'artist', 'band', 'vinyl', 'cd', 'spotify']):
+            music_keywords = ['music', 'vinyl', 'cd', 'album', 'spotify', 'apple music', 'headphones', 'speaker', 'audio']
+            music_categories = [cat for cat in categories if any(keyword in cat.lower() for keyword in music_keywords)]
+            other_categories = [cat for cat in categories if not any(keyword in cat.lower() for keyword in music_keywords)]
+            filtered_categories = music_categories + other_categories
+        else:
+            filtered_categories = categories
+
+        # Limit categories to top 7 and clean them
+        filtered_categories = filtered_categories[:7]
+        
+        # Clean category names for better scraping
+        cleaned_categories = []
+        for category in filtered_categories:
+            # Remove bullet points and clean the category name
+            clean_cat = category.replace("*", "").replace("  ", " ").strip()
+            # Remove brand examples in parentheses
+            clean_cat = re.sub(r'\s*\([^)]*\)', '', clean_cat)
+            # Remove "e.g." and similar text
+            clean_cat = re.sub(r'\s*e\.g\.,?\s*', '', clean_cat)
+            clean_cat = clean_cat.strip()
+            if clean_cat and len(clean_cat) > 2:
+                cleaned_categories.append(clean_cat)
+        
+        categories = cleaned_categories
+        print(f"Cleaned categories for scraping: {categories}")
 
         # Get Amazon domain
         amazon_domain = get_amazon_domain(user_data["user_location"])
@@ -277,6 +307,7 @@ def get_shopping_recommendations():
         category_products = {}
 
         def fetch_category_products(category):
+            print(f"Starting to scrape category: '{category}'")
             urls = amazon_category_top_products(
                 category,
                 amazon_domain,
@@ -286,8 +317,10 @@ def get_shopping_recommendations():
             print(f"URLs for category '{category}': {urls}")
             products = []
             if not urls:
+                print(f"No URLs found for category '{category}'")
                 return category, products
 
+            print(f"Scraping {len(urls)} products for category '{category}'")
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {
                     executor.submit(scrape_amazon_product, url): url for url in urls
@@ -297,6 +330,7 @@ def get_shopping_recommendations():
                     try:
                         product = future.result()
                         if product:
+                            print(f"Successfully scraped product: {product.get('title', 'No title')[:50]}...")
                             # Filter products by budget range if price_value is available
                             budget_range = user_data.get("budget_range")
                             if budget_range and product.get("price_value") is not None:
@@ -304,16 +338,26 @@ def get_shopping_recommendations():
                                     low, high = (
                                         budget_range.replace("€", "")
                                         .replace("$", "")
+                                        .replace("£", "")
                                         .split("-")
                                     )
                                     low = float(low.strip())
                                     high = float(high.strip())
                                     if low <= product["price_value"] <= high:
                                         products.append(product)
+                                        print(f"Product within budget: {product.get('price_value')}")
+                                    else:
+                                        print(f"Product outside budget: {product.get('price_value')} (range: {low}-{high})")
                                 except:
+                                    # If budget parsing fails, include product anyway
                                     products.append(product)
+                                    print(f"Budget parsing failed, included product: {product.get('price_value')}")
                             else:
+                                # If no price or budget, include product
                                 products.append(product)
+                                print(f"No price/budget, included product: {product.get('price_value')}")
+                        else:
+                            print(f"Failed to scrape product from URL: {url}")
                     except Exception as e:
                         print(f"Exception occurred while scraping URL {url}: {e}")
 
