@@ -272,14 +272,64 @@ def get_shopping_recommendations():
         shopping_request = shopping_input.get('shoppingInput', '').lower()
         filtered_categories = []
         
-        # If user asks for music, prioritize music-related categories
-        if any(word in shopping_request for word in ['music', 'song', 'album', 'artist', 'band', 'vinyl', 'cd', 'spotify']):
-            music_keywords = ['music', 'vinyl', 'cd', 'album', 'spotify', 'apple music', 'headphones', 'speaker', 'audio']
-            music_categories = [cat for cat in categories if any(keyword in cat.lower() for keyword in music_keywords)]
-            other_categories = [cat for cat in categories if not any(keyword in cat.lower() for keyword in music_keywords)]
-            filtered_categories = music_categories + other_categories
+        # Define keyword mappings for different types of requests
+        category_keywords = {
+            'music': ['music', 'song', 'album', 'artist', 'band', 'vinyl', 'cd', 'spotify', 'apple music', 'headphones', 'speaker', 'audio'],
+            'gaming': ['game', 'gaming', 'console', 'controller', 'headset', 'pc gaming', 'playstation', 'xbox', 'nintendo'],
+            'sports': ['sport', 'basketball', 'football', 'cricket', 'fitness', 'exercise', 'workout', 'training', 'athletic'],
+            'tech': ['tech', 'technology', 'computer', 'laptop', 'phone', 'tablet', 'accessory', 'gadget', 'electronic'],
+            'fashion': ['clothes', 'fashion', 'clothing', 'shirt', 'dress', 'shoes', 'sneakers', 'outfit', 'style'],
+            'books': ['book', 'reading', 'novel', 'textbook', 'kindle', 'ebook', 'literature', 'author'],
+            'home': ['home', 'kitchen', 'furniture', 'decor', 'appliance', 'garden', 'outdoor', 'household'],
+            'automotive': ['car', 'automotive', 'vehicle', 'accessory', 'maintenance', 'parts', 'tools'],
+            'beauty': ['beauty', 'makeup', 'skincare', 'cosmetic', 'perfume', 'lotion', 'cream'],
+            'food': ['food', 'cooking', 'recipe', 'ingredient', 'snack', 'beverage', 'drink'],
+            'pet': ['pet', 'dog', 'cat', 'animal', 'pet food', 'toy', 'accessory'],
+            'baby': ['baby', 'infant', 'toddler', 'diaper', 'toy', 'clothing'],
+            'office': ['office', 'work', 'desk', 'stationery', 'paper', 'pen', 'notebook'],
+            'travel': ['travel', 'luggage', 'backpack', 'suitcase', 'trip', 'vacation'],
+            'art': ['art', 'craft', 'painting', 'drawing', 'creative', 'diy', 'hobby']
+        }
+        
+        # Determine the primary category based on user request
+        primary_category = None
+        category_scores = {}
+        
+        # Score each category based on keyword matches
+        for category, keywords in category_keywords.items():
+            score = 0
+            for keyword in keywords:
+                if keyword in shopping_request:
+                    score += 1
+            if score > 0:
+                category_scores[category] = score
+        
+        # Get the category with the highest score
+        if category_scores:
+            primary_category = max(category_scores, key=category_scores.get)
+            print(f"Detected primary category: {primary_category} (score: {category_scores[primary_category]})")
         else:
+            # Try to extract keywords from the request for better matching
+            request_words = shopping_request.split()
+            print(f"No predefined category detected. Analyzing request words: {request_words}")
+            
+            # Check if any of the user's favorite categories match the request
+            user_categories = user_data.get('favorite_categories', [])
+            for user_cat in user_categories:
+                if user_cat.lower() in shopping_request:
+                    print(f"Found match with user's favorite category: {user_cat}")
+                    break
+        
+        # If we found a primary category, prioritize those categories
+        if primary_category:
+            primary_keywords = category_keywords[primary_category]
+            primary_categories = [cat for cat in categories if any(keyword in cat.lower() for keyword in primary_keywords)]
+            other_categories = [cat for cat in categories if not any(keyword in cat.lower() for keyword in primary_keywords)]
+            filtered_categories = primary_categories + other_categories
+        else:
+            # If no specific category detected, use original order
             filtered_categories = categories
+            print("No specific category detected, using original category order from AI")
 
         # Limit categories to top 7 and clean them
         filtered_categories = filtered_categories[:7]
