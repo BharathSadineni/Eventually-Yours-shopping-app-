@@ -136,58 +136,28 @@ def store_user_info():
 
 # Helper function to get currency symbol based on user location
 def get_currency_symbol(location):
+    """Get currency symbol based on location"""
     currency_map = {
         "United States": "$",
-        "Canada": "C$",
         "United Kingdom": "£",
+        "Canada": "$",
+        "Australia": "$",
         "Germany": "€",
         "France": "€",
-        "Japan": "¥",
-        "Australia": "A$",
-        "Brazil": "R$",
-        "India": "₹",
-        "China": "¥",
-        "Mexico": "$",
         "Italy": "€",
         "Spain": "€",
         "Netherlands": "€",
-        "Sweden": "kr",
-        "Norway": "kr",
-        "Denmark": "kr",
-        "Finland": "€",
-        "Switzerland": "CHF",
-        "Austria": "€",
         "Belgium": "€",
-        "Portugal": "€",
-        "Ireland": "€",
-        "New Zealand": "NZ$",
+        "Austria": "€",
+        "Switzerland": "CHF",
+        "Japan": "¥",
+        "India": "₹",
+        "Brazil": "R$",
+        "Mexico": "$",
         "South Korea": "₩",
-        "Singapore": "S$",
-        "Thailand": "฿",
-        "Malaysia": "RM",
-        "Philippines": "₱",
-        "Indonesia": "Rp",
-        "Vietnam": "₫",
-        "South Africa": "R",
-        "Egypt": "E£",
-        "Nigeria": "₦",
-        "Kenya": "KSh",
-        "Morocco": "MAD",
-        "Argentina": "$",
-        "Chile": "$",
-        "Colombia": "$",
-        "Peru": "S/",
-        "Venezuela": "Bs",
-        "Ecuador": "$",
-        "Uruguay": "$",
-        "Paraguay": "₲",
-        "Bolivia": "Bs",
-        "Costa Rica": "₡",
-        "Panama": "$",
-        "Guatemala": "Q",
-        "Honduras": "L",
-        "El Salvador": "$",
-        "Nicaragua": "C$",
+        "Singapore": "$",
+        "Hong Kong": "$",
+        "Taiwan": "$",
     }
     return currency_map.get(location, "$")
 
@@ -514,7 +484,7 @@ def process_recommendation_request(request_data):
             urls = amazon_category_top_products(
                 category,
                 amazon_domain,
-                num_results=2,  # Reduced from 3 to 2 for faster scraping
+                num_results=1,  # Reduced from 2 to 1 for more conservative approach
                 budget_range=user_data.get("budget_range"),
             )
             products = []
@@ -522,7 +492,7 @@ def process_recommendation_request(request_data):
                 return category, products
 
             # Increased max_workers for faster concurrent scraping
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=5) as executor:  # Reduced from 10 to 5
                 futures = {
                     executor.submit(scrape_amazon_product, url): url for url in urls
                 }
@@ -557,7 +527,7 @@ def process_recommendation_request(request_data):
             return category, products
 
         # Scrape products for each category with increased concurrency
-        with ThreadPoolExecutor(max_workers=7) as category_executor:
+        with ThreadPoolExecutor(max_workers=3) as category_executor:  # Reduced from 7 to 3
             category_futures = [
                 category_executor.submit(fetch_category_products, category)
                 for category in categories
@@ -575,7 +545,37 @@ def process_recommendation_request(request_data):
         valid_products = [p for p in all_products if p and p.get("title") and p.get("url")]
         
         if not valid_products:
-            return {"status": "error", "message": "Unable to fetch product recommendations at this time. Please try again later."}, 503
+            print(f"No valid products found for session {session_id}, using fallback products")
+            # Fallback to sample products based on the detected category
+            fallback_products = generate_fallback_products(shopping_request, user_data)
+            if fallback_products:
+                # Format fallback products
+                formatted_products = []
+                for i, product in enumerate(fallback_products):
+                    formatted_products.append({
+                        "id": str(i + 1),
+                        "name": product["title"],
+                        "price": product.get("price_value", 0),
+                        "currency": currency_symbol,
+                        "image": product.get("image_url", "/placeholder.svg"),
+                        "buyUrl": product.get("url", ""),
+                        "category": "Sample",
+                        "rating": product.get("rating", 4.0),
+                        "reasoning": "Sample product based on your interests",
+                    })
+                
+                response_data = {
+                    "status": "success",
+                    "categories": categories,
+                    "products": formatted_products,
+                    "ai_recommendations": json.dumps([]),
+                    "note": "Using sample products due to temporary scraping issues"
+                }
+                
+                user_sessions[session_id]["results"] = response_data
+                return response_data
+            else:
+                return {"status": "error", "message": "Unable to fetch product recommendations at this time. Please try again later."}, 503
 
         # Get currency symbol
         currency_symbol = get_currency_symbol(user_data.get("user_location", ""))
@@ -751,6 +751,126 @@ def process_recommendation_request(request_data):
     except Exception as e:
         print(f"Error processing recommendation request: {e}")
         return {"status": "error", "message": str(e)}, 500
+
+
+def generate_fallback_products(shopping_request, user_data):
+    """Generate fallback sample products when scraping fails"""
+    try:
+        # Detect category from shopping request
+        request_lower = shopping_request.lower()
+        
+        # Sample products by category
+        sample_products = {
+            'tech': [
+                {
+                    "title": "Wireless Bluetooth Headphones",
+                    "price_value": 45.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.2
+                },
+                {
+                    "title": "Smartphone Stand & Charger",
+                    "price_value": 29.99,
+                    "image_url": "/placeholder.svg", 
+                    "url": "https://www.amazon.com",
+                    "rating": 4.0
+                },
+                {
+                    "title": "Portable Power Bank 10000mAh",
+                    "price_value": 24.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.3
+                }
+            ],
+            'sports': [
+                {
+                    "title": "Running Shoes - Lightweight",
+                    "price_value": 59.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.1
+                },
+                {
+                    "title": "Fitness Tracker Watch",
+                    "price_value": 39.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.0
+                },
+                {
+                    "title": "Yoga Mat - Non-Slip",
+                    "price_value": 19.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.4
+                }
+            ],
+            'gaming': [
+                {
+                    "title": "Gaming Mouse - RGB",
+                    "price_value": 34.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.2
+                },
+                {
+                    "title": "Mechanical Gaming Keyboard",
+                    "price_value": 49.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.1
+                },
+                {
+                    "title": "Gaming Headset with Mic",
+                    "price_value": 39.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.0
+                }
+            ],
+            'music': [
+                {
+                    "title": "Bluetooth Speaker - Portable",
+                    "price_value": 35.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.3
+                },
+                {
+                    "title": "Guitar Tuner - Digital",
+                    "price_value": 15.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.1
+                },
+                {
+                    "title": "Studio Headphones",
+                    "price_value": 49.99,
+                    "image_url": "/placeholder.svg",
+                    "url": "https://www.amazon.com",
+                    "rating": 4.2
+                }
+            ]
+        }
+        
+        # Determine which category to use
+        if any(word in request_lower for word in ['tech', 'technology', 'electronic', 'computer', 'phone']):
+            return sample_products.get('tech', [])
+        elif any(word in request_lower for word in ['sport', 'fitness', 'running', 'exercise', 'workout']):
+            return sample_products.get('sports', [])
+        elif any(word in request_lower for word in ['game', 'gaming', 'console', 'controller']):
+            return sample_products.get('gaming', [])
+        elif any(word in request_lower for word in ['music', 'audio', 'sound', 'speaker']):
+            return sample_products.get('music', [])
+        else:
+            # Default to tech if no specific category detected
+            return sample_products.get('tech', [])
+            
+    except Exception as e:
+        print(f"Error generating fallback products: {e}")
+        return []
 
 
 if __name__ == "__main__":
