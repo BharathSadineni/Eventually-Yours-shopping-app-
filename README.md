@@ -1,132 +1,125 @@
-# Neon Shopping Assistant - Full Stack Application
+# Eventually Yours Shopping App
 
-A modern, AI-powered shopping recommendation system with a cyberpunk neon aesthetic. This application combines a React/Next.js frontend with a Python Flask backend that uses Amazon scraping and Google Gemini AI for personalized product recommendations.
+A modern AI-powered shopping assistant that provides personalized product recommendations based on user preferences and shopping context.
 
-## 🚀 Features
+## 🏗️ Architecture
 
-### Frontend (React/Next.js)
-- **Neon Cyberpunk Design**: Sharp contrasts, electric colors, animated backgrounds
-- **Responsive Design**: Works perfectly on desktop and mobile
-- **Three Main Pages**: Landing, User Info, Shopping Input
-- **Real-time Animations**: Smooth transitions and neon glow effects
-- **Import/Export**: JSON data import/export functionality
+```
+eventually-yours-shopping-app/
+├── frontend/                    # React + Vite frontend
+│   ├── src/                    # Source code
+│   │   ├── components/         # Reusable UI components
+│   │   ├── pages/             # Page components
+│   │   ├── context/           # React context providers
+│   │   ├── hooks/             # Custom React hooks
+│   │   ├── lib/               # Utility libraries
+│   │   ├── shared/            # Shared schemas and types
+│   │   └── types/             # TypeScript type definitions
+│   ├── public/                # Static assets
+│   ├── package.json           # Frontend dependencies
+│   ├── vite.config.ts         # Vite configuration
+│   ├── tailwind.config.ts     # Tailwind CSS configuration
+│   └── tsconfig.json          # TypeScript configuration
+├── backend/                    # Python Flask backend
+│   ├── api/                   # API endpoints
+│   │   └── backend_api.py     # Main Flask application
+│   ├── services/              # Business logic services
+│   │   ├── amazon_scraper.py  # Amazon product scraping
+│   │   ├── prompt_builder.py  # AI prompt construction
+│   │   ├── sorting_algorithm.py # Product sorting logic
+│   │   └── improved_categories.py # Category management
+│   ├── utils/                 # Utility functions
+│   │   └── domain_gen.py      # Amazon domain mapping
+│   ├── requirements.txt       # Python dependencies
+│   ├── main.py               # Backend entry point
+│   └── run.py                # Alternative entry point
+├── docs/                      # Documentation
+│   └── PERFORMANCE_OPTIMIZATIONS.md
+└── README.md                  # This file
+```
 
-### Backend (Python/Flask)
-- **AI-Powered Recommendations**: Uses Google Gemini API for intelligent product categorization
-- **Amazon Product Scraping**: Real-time product data from Amazon
-- **Smart Filtering**: Budget-based product filtering
-- **Multi-threaded Processing**: Concurrent product fetching for better performance
-- **Session Management**: Secure user session handling
-
-## 🛠️ Installation & Setup
-
-### Prerequisites
-- Node.js 18+ and npm
-- Python 3.8+
-- PostgreSQL (optional, for user management)
+## 🚀 Quick Start
 
 ### Frontend Setup
-\`\`\`bash
-# Install dependencies
-npm install
 
-# Start development server
+```bash
+cd frontend
+npm install
 npm run dev
-\`\`\`
+```
+
+The frontend will be available at `http://localhost:5173`
 
 ### Backend Setup
-\`\`\`bash
-# Navigate to backend directory
+
+```bash
 cd backend
-
-# Install Python dependencies
 pip install -r requirements.txt
+python main.py
+```
 
-# Start the Flask API server
-python backend_api.py
-\`\`\`
+The backend API will be available at `http://localhost:5000`
 
-### Environment Variables
-Create a `.env.local` file in the root directory:
-\`\`\`
-NEXT_PUBLIC_API_URL=http://localhost:5000
-\`\`\`
+## 🛠️ Features
 
-## 🎯 Usage
+- **Personalized Recommendations**: AI-powered product suggestions based on user preferences
+- **Multi-Category Support**: Recommendations across various product categories
+- **Real-time Scraping**: Live product data from Amazon
+- **User Profile Management**: Save and manage user preferences
+- **Export/Import**: Backup and restore user data
+- **Responsive Design**: Modern UI that works on all devices
 
-1. **Start the Backend**: Run `python backend_api.py` in the backend directory
-2. **Start the Frontend**: Run `npm run dev` in the root directory
-3. **Access the App**: Open http://localhost:3000 in your browser
+## 🧩 Tech Stack
 
-### User Flow
-1. **Landing Page**: Animated introduction with product category carousel
-2. **User Information**: Enter personal preferences, location, budget, interests
-3. **Shopping Input**: Specify shopping occasion, style, and specific needs
-4. **AI Recommendations**: Get personalized product recommendations with AI reasoning
+### Frontend
+- **React 18** - UI framework
+- **TypeScript** - Type safety
+- **Vite** - Build tool and dev server
+- **Tailwind CSS** - Styling
+- **React Hook Form** - Form management
+- **Zod** - Schema validation
+- **Lucide React** - Icons
+- **Radix UI** - Accessible components
 
-## 🔧 API Endpoints
+### Backend
+- **Flask** - Web framework
+- **Python 3.8+** - Runtime
+- **Beautiful Soup** - Web scraping
+- **Google Gemini API** - AI recommendations
+- **Threading** - Concurrent processing
 
-- `GET /api/health` - Health check
-- `POST /api/user-info` - Store user information
-- `POST /api/shopping-recommendations` - Get AI-powered product recommendations
-- `GET /api/export-data/<session_id>` - Export user data
+## 📁 Key Components
 
-## 🎨 Design System
+### Frontend Structure
+- `src/pages/` - Main application pages
+- `src/components/ui/` - Reusable UI components
+- `src/context/` - React context for state management
+- `src/hooks/` - Custom React hooks
+- `src/lib/` - Utility functions and API clients
 
-### Color Palette
-- **Void**: #000000 (Deep black backgrounds)
-- **Fuchsia**: #FF00FF (Electric fuchsia accents)
-- **Jewel**: #00FFFF (Vibrant cyan details)
-- **Stark**: #FFFFFF (Pure white text)
+### Backend Structure
+- `api/` - REST API endpoints
+- `services/` - Business logic and external integrations
+- `utils/` - Helper functions and utilities
 
-### Key Features
-- Sharp, angular design elements
-- Neon glow effects using CSS box-shadow
-- High contrast for maximum visual impact
-- Smooth animations and transitions
+## 🔧 Development
 
-## 🧠 AI Integration
+### Adding New Features
+1. Frontend: Add components in `frontend/src/components/`
+2. Backend: Add services in `backend/services/`
+3. API: Add endpoints in `backend/api/backend_api.py`
 
-The application uses Google Gemini AI for:
-- **Category Generation**: Analyzing user input to suggest relevant product categories
-- **Product Ranking**: Intelligent sorting of products based on user preferences
-- **Personalized Reasoning**: Detailed explanations for each recommendation
+### Code Style
+- Frontend: ESLint + Prettier
+- Backend: PEP 8
+- TypeScript strict mode enabled
 
-## 🛒 Amazon Integration
+## 📚 Documentation
 
-- **Multi-domain Support**: Automatically selects appropriate Amazon domain based on user location
-- **Smart Scraping**: Rotating user agents and rate limiting to avoid blocking
-- **Budget Filtering**: Filters products based on user's specified budget range
-- **Real-time Data**: Fresh product information including prices, ratings, and images
-
-## 📱 Responsive Design
-
-- **Mobile-first**: Optimized for all screen sizes
-- **Touch-friendly**: Large buttons and intuitive gestures
-- **Performance**: Optimized animations and lazy loading
-- **Accessibility**: ARIA labels and keyboard navigation support
-
-## 🔒 Security Features
-
-- **Session Management**: Secure user session handling
-- **Input Validation**: Comprehensive form validation
-- **Error Handling**: Graceful error handling and user feedback
-- **Rate Limiting**: Built-in protection against API abuse
-
-## 🚀 Deployment
-
-### Frontend (Vercel)
-\`\`\`bash
-npm run build
-# Deploy to Vercel or your preferred platform
-\`\`\`
-
-### Backend (Production)
-\`\`\`bash
-# Use a production WSGI server like Gunicorn
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 backend_api:app
-\`\`\`
+See the `docs/` folder for detailed documentation including:
+- Performance optimizations
+- API documentation
+- Deployment guides
 
 ## 🤝 Contributing
 
@@ -138,34 +131,31 @@ gunicorn -w 4 -b 0.0.0.0:5000 backend_api:app
 
 ## 📄 License
 
-This project is licensed under the MIT License.
+MIT License - see LICENSE file for details
 
-## 🆘 Support
+## 🔑 Environment Setup
 
-For issues or questions:
-1. Check the GitHub issues
-2. Review the API documentation
-3. Contact the development team
+Before running the application, you need to set up your API keys:
 
----
+### Option 1: Automatic Setup (Recommended)
+```bash
+cd backend
+python setup-env.py
+```
+This will guide you through creating your `.env` file with your Gemini API key.
 
-**Built with ❤️ using React, Next.js, Python, Flask, and AI**
-\`\`\`
+### Option 2: Manual Setup
+1. Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+2. Create a `.env` file in the `backend/` directory:
+```bash
+cd backend
+cp env.example .env
+```
+3. Edit `.env` and replace `your_gemini_api_key_here` with your actual API key:
+```
+GEMINI_API_KEY=your_actual_api_key_here
+FLASK_ENV=development
+FLASK_DEBUG=True
+```
 
-This complete full-stack application integrates your Python backend with the React frontend, providing:
-
-## 🎯 **Key Integration Points**
-
-1. **API Connection**: Frontend connects to Flask backend at `http://localhost:5000`
-2. **Session Management**: User data flows from frontend → backend → AI processing
-3. **Real-time Recommendations**: Amazon scraping + Gemini AI integration
-4. **Neon Design**: Consistent cyberpunk aesthetic throughout
-5. **Error Handling**: Comprehensive error handling and user feedback
-
-## 🚀 **To Run the Complete Application**
-
-1. **Backend**: `cd backend && python backend_api.py`
-2. **Frontend**: `npm run dev`
-3. **Access**: Open `http://localhost:3000`
-
-The application now provides a complete shopping assistant experience with AI-powered recommendations, real Amazon product data, and a stunning neon interface!
+⚠️ **Security Note**: The `.env` file is automatically ignored by git to protect your API keys.

@@ -1,2 +1,0 @@
-=======
-          {translations.enterShoppingInput || "Enter your shopping input"}

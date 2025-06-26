@@ -1,9 +1,10 @@
 import sys
 import sys
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from domain_gen import get_amazon_domain
-from amazon_scraper import amazon_category_top_products, scrape_amazon_product
-from prompt_builder import build_and_get_categories
+from utils.domain_gen import get_amazon_domain
+from services.amazon_scraper import amazon_category_top_products, scrape_amazon_product
+from services.prompt_builder import build_and_get_categories
 
 
 def get_user_details():
@@ -37,7 +38,13 @@ def get_user_details():
 
 
 def main():
-    api_key = "AIzaSyDnzIiI4fyTjev59G4mHvW46amYTj83uvA"  # Use your API key here
+    # Get API key from environment variable
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        print("Error: GEMINI_API_KEY environment variable not set")
+        print("Please create a .env file in the backend directory with your API key:")
+        print("GEMINI_API_KEY=your_actual_api_key_here")
+        return
 
     # Get user details manually
     user_input, profile_details = get_user_details()
@@ -111,7 +118,7 @@ def main():
 
     sorting_algo = SortingAlgorithm(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-        "AIzaSyDnzIiI4fyTjev59G4mHvW46amYTj83uvA",
+        api_key,
     )
     all_products = []
     for products in category_products.values():
